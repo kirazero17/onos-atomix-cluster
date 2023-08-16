@@ -4,8 +4,11 @@
 
 
 netName="onos-cluster-net"
+switchNetName="onos-switches-net"
+
 creatorKey="creator"
 creatorValue="onos-cluster-create"
+creatorValue2="onos-switchnet-create"
 
 workingdir="$(pwd)"
 
@@ -18,6 +21,9 @@ onosNum=3
 
 customSubnet=172.20.0.0/16
 customGateway=172.20.0.1
+
+switchnet=""
+switchgw="172.21.0.1"
 
 allocatedAtomixIps=()
 allocatedOnosIps=()
@@ -37,6 +43,9 @@ usage() {
       -t, --subnet-name           the custom name for your network
       -n, --custom-subnet         the subnet (IPv4) you want to create
       -g, --custom-gateway        the gateway address (IPv4) for the new subnet
+      --custom-switchnet-name     the name of your secondary subnet
+      --custom-switchnet          a separate subnet to connect the control plane to the switches
+      --switchnet-gateway         the gateway address for the switches network
 EOF
 }
 
@@ -53,6 +62,9 @@ parse_params() {
           -t|--subnet-name)    netName="$2"; shift 2 ;;
           -n|--custom-subnet)  customSubnet="$2"; shift 2 ;;
           -g|--custom-gateway) customGateway="$2"; shift 2 ;;
+          --custom-switchnet-name) switchNetName="$2"; shift 2 ;;
+          --custom-switchnet)  switchnet="$2"; shift 2 ;;
+          --switchnet-gateway) switchgw="$2"; shift 2 ;;
           --)                  shift; break ;;
           -*)                  usage; die "Invalid option: $1" ;;
           *)                   break ;;
@@ -147,8 +159,21 @@ nextIp(){
 create_net_ine(){
   if [[ ! $(sudo docker network ls --format "{{.Name}}" --filter label=$creatorKey=$creatorValue) ]];
   then
-      sudo docker network create -d bridge $netName --subnet $customSubnet --gateway $customGateway --label "$creatorKey=$creatorValue" >/dev/null
-      echo "Creating Docker network $netName ..."
+      sudo docker network create -d bridge $netName \
+        --subnet $customSubnet --gateway $customGateway \
+        --label "$creatorKey=$creatorValue" >/dev/null
+      echo "Creating primary Docker network $netName ..."
+  fi
+
+  if [[ -n "$switchnet" ]];
+  then
+      if [[ ! $(sudo docker network ls --format "{{.Name}}" --filter label=$creatorKey=$creatorValue2) ]];
+      then
+        sudo docker network create -d bridge $switchNetName \
+          --subnet $switchnet --gateway $switchgw \
+          --label "$creatorKey=$creatorValue2" >/dev/null
+        echo "Creating secondary Docker network $switchNetName ..."
+      fi
   fi
 }
 
@@ -184,8 +209,8 @@ create_atomix(){
       #if [[ ! " ${usedIps[@]} " =~ " ${currentIp} " ]]; then
       if ! containsElement $currentIp "${usedIps[@]}";
       then
-        sudo docker create -t --name atomix-$i --hostname atomix-$i --net $netName --ip $currentIp $atomixImage >/dev/null
-        echo "Creating atomix-$i container with IP: $currentIp"
+        sudo docker run -t --name atomix-$i --hostname atomix-$i --net $netName --ip $currentIp $atomixImage >/dev/null
+        echo "Starting atomix-$i container with IP: $currentIp"
         goodIP=$currentIp
       fi
       sleep 1
@@ -224,7 +249,7 @@ create_onos(){
       if ! containsElement $currentIp "${usedIps[@]}";
       then
         echo "Starting onos-$i container with IP: $currentIp"
-        sudo docker run -t -d \
+        sudo docker create -t -d \
           --name onos-$i \
           --hostname onos-$i \
           --net $netName \
@@ -244,6 +269,46 @@ create_onos(){
   done
 }
 
+secondary_network_onos(){
+  if [[ -n "$switchnet" ]];
+  then
+    #sudo docker network connect $switchnet onos-$1 --ip $2
+    emptyArray=()
+    for (( i=1; i<=$onosNum; i++ ))
+    do
+
+      usedIps=("${emptyArray[@]}" "${allocatedOnosIps[@]}" "${allocatedAtomixIps[@]}")
+      subnet=$(sudo docker inspect $switchNetName | jq -c '.[0].IPAM.Config[0].Subnet' | tr -d '"')
+      usedIps+=($(sudo docker inspect $switchNetName | jq -c '.[0].IPAM.Config[0].Gateway' | tr -d '"'))
+      sudo docker inspect $switchNetName | jq -c '.[0].Containers[] | .IPv4Address' |\
+      while read -r ipAndMask;
+      do
+        usedIp=$(echo $ipAndMask | grep -o '[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}')
+        usedIps+=(usedIp)
+      done
+
+      goodIP=""
+      IFS=/ read sub mask <<< "$subnet"
+      currentIp=$(nextIp $subnet $sub)
+      while [ -z "$goodIP" ]
+      do
+        if ! containsElement $currentIp "${usedIps[@]}";
+        then
+          echo "Connecting onos-$i container to secondary network $switchNetName with IP: $currentIp"
+          sudo docker connect --ip $currentIp $switchNetName onos-$i
+
+          goodIP=$currentIp
+        fi
+        sleep 1
+        currentIp=$(nextIp $subnet $currentIp)
+      done
+
+      allocatedOnosIps+=($goodIP)
+
+    done
+  fi
+}
+
 apply_atomix_config(){
   for (( i=1; i<=$atomixNum; i++ ))
   do
@@ -251,7 +316,7 @@ apply_atomix_config(){
     cd
     "$(workingdir)"/atomix-gen-config "${allocatedAtomixIps[$pos]}" /tmp/atomix-$i.conf ${allocatedAtomixIps[*]} >/dev/null
     sudo docker cp /tmp/atomix-$i.conf atomix-$i:/opt/atomix/conf/atomix.conf
-    sudo docker container start atomix-$i >/dev/null
+    sudo docker container restart atomix-$i >/dev/null
     echo "Starting container atomix-$i"
   done
 }
@@ -266,7 +331,7 @@ apply_onos_config(){
     echo "Copying configuration to onos-$i"
     sudo docker cp /tmp/cluster-$i.json onos-$i:/root/onos/config/cluster.json
     echo "Restarting container onos-$i"
-    sudo docker restart onos-$i >/dev/null
+    sudo docker container restart onos-$i >/dev/null
   done
 }
 
@@ -287,7 +352,9 @@ function main() {
     
     create_atomix
     apply_atomix_config
+
     create_onos
+    secondary_network_onos
     apply_onos_config
 }
 
