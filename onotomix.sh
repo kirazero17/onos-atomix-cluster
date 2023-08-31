@@ -7,7 +7,7 @@ netName="onos-cluster-net"
 switchNetName="onos-switches-net"
 
 creatorKey="creator"
-creatorValue="onos-cluster-create"
+creatorValue1="onos-cluster-create"
 creatorValue2="onos-switchnet-create"
 
 workingdir="$(pwd)"
@@ -157,11 +157,11 @@ nextIp(){
 }
 
 create_net_ine(){
-  if [[ ! $(sudo docker network ls --format "{{.Name}}" --filter label=$creatorKey=$creatorValue) ]];
+  if [[ ! $(sudo docker network ls --format "{{.Name}}" --filter label=$creatorKey=$creatorValue1) ]];
   then
       sudo docker network create -d bridge $netName \
         --subnet $customSubnet --gateway $customGateway \
-        --label "$creatorKey=$creatorValue" >/dev/null
+        --label "$creatorKey=$creatorValue1" >/dev/null
       echo "Creating primary Docker network $netName ..."
   fi
 
@@ -249,13 +249,15 @@ create_onos(){
       if ! containsElement $currentIp "${usedIps[@]}";
       then
         echo "Starting onos-$i container with IP: $currentIp"
-        sudo docker create -t -d \
+        sudo docker run -t -d \
           --name onos-$i \
           --hostname onos-$i \
           --net $netName \
           --ip $currentIp \
           -e ONOS_APPS="drivers,openflow-base,netcfghostprovider,lldpprovider,gui2" \
           $onosImage >/dev/null
+
+        sudo docker stop $onosImage >/dev/null
 
         goodIP=$currentIp
       fi
@@ -314,7 +316,7 @@ apply_atomix_config(){
   do
     pos=$((i-1))
     cd
-    "$(workingdir)"/atomix-gen-config "${allocatedAtomixIps[$pos]}" /tmp/atomix-$i.conf ${allocatedAtomixIps[*]} >/dev/null
+    "${workingdir}"/atomix-gen-config "${allocatedAtomixIps[$pos]}" /tmp/atomix-$i.conf ${allocatedAtomixIps[*]} >/dev/null
     sudo docker cp /tmp/atomix-$i.conf atomix-$i:/opt/atomix/conf/atomix.conf
     sudo docker container restart atomix-$i >/dev/null
     echo "Starting container atomix-$i"
@@ -326,7 +328,7 @@ apply_onos_config(){
   do
     pos=$((i-1))
     cd
-    "$(workingdir)"/onos-gen-config "${allocatedOnosIps[$pos]}" /tmp/cluster-$i.json -n "${allocatedAtomixIps[*]}" >/dev/null
+    "${workingdir}"/onos-gen-config "${allocatedOnosIps[$pos]}" /tmp/cluster-$i.json -n "${allocatedAtomixIps[*]}" >/dev/null
     sudo docker exec onos-$i mkdir /root/onos/config
     echo "Copying configuration to onos-$i"
     sudo docker cp /tmp/cluster-$i.json onos-$i:/root/onos/config/cluster.json
