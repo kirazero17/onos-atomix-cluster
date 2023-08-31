@@ -257,8 +257,6 @@ create_onos(){
           -e ONOS_APPS="drivers,openflow-base,netcfghostprovider,lldpprovider,gui2" \
           $onosImage >/dev/null
 
-        sudo docker stop $onosImage >/dev/null
-
         goodIP=$currentIp
       fi
       sleep 1
@@ -296,6 +294,7 @@ secondary_network_onos(){
       do
         if ! containsElement $currentIp "${usedIps[@]}";
         then
+          sudo docker stop onos-$i
           echo "Connecting onos-$i container to secondary network $switchNetName with IP: $currentIp"
           sudo docker connect --ip $currentIp $switchNetName onos-$i
 
