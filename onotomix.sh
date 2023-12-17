@@ -19,11 +19,11 @@ onosImage="onosproject/onos:$onosVersion"
 atomixNum=3
 onosNum=3
 
-customSubnet=172.20.0.0/16
-customGateway=172.20.0.1
+customSubnet=192.168.67.0/24
+customGateway=192.168.67.254
 
 switchnet=""
-switchgw="172.21.0.1"
+switchgw="" #172.21.0.1
 
 allocatedAtomixIps=()
 allocatedOnosIps=()
@@ -280,7 +280,7 @@ secondary_network_onos(){
       usedIps=("${emptyArray[@]}" "${allocatedOnosIps[@]}" "${allocatedAtomixIps[@]}")
       subnet=$(sudo docker inspect $switchNetName | jq -c '.[0].IPAM.Config[0].Subnet' | tr -d '"')
       usedIps+=($(sudo docker inspect $switchNetName | jq -c '.[0].IPAM.Config[0].Gateway' | tr -d '"'))
-      sudo docker inspect $switchNetName | jq -c '.[0].Containers[] | .IPv4Address' |\
+      docker inspect $switchNetName | jq -c '.[0].Containers[] | .IPv4Address' |\
       while read -r ipAndMask;
       do
         usedIp=$(echo $ipAndMask | grep -o '[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}')
@@ -294,9 +294,9 @@ secondary_network_onos(){
       do
         if ! containsElement $currentIp "${usedIps[@]}";
         then
-          sudo docker stop onos-$i
+          docker stop onos-$i
           echo "Connecting onos-$i container to secondary network $switchNetName with IP: $currentIp"
-          sudo docker connect --ip $currentIp $switchNetName onos-$i
+          docker connect --ip $currentIp $switchNetName onos-$i
 
           goodIP=$currentIp
         fi
@@ -315,9 +315,9 @@ apply_atomix_config(){
   do
     pos=$((i-1))
     cd
-    "${workingdir}"/atomix-gen-config "${allocatedAtomixIps[$pos]}" /tmp/atomix-$i.conf ${allocatedAtomixIps[*]} >/dev/null
-    sudo docker cp /tmp/atomix-$i.conf atomix-$i:/opt/atomix/conf/atomix.conf
-    sudo docker container restart atomix-$i >/dev/null
+    "${workingdir}"/atomix-gen-config "${allocatedAtomixIps[$pos]}" "${workingdir}"/configs/atomix-$i.conf ${allocatedAtomixIps[*]} >/dev/null
+    docker cp "${workingdir}"/configs/atomix-$i.conf atomix-$i:/opt/atomix/conf/atomix.conf
+    docker container restart atomix-$i >/dev/null
     echo "Starting container atomix-$i"
   done
 }
@@ -327,12 +327,12 @@ apply_onos_config(){
   do
     pos=$((i-1))
     cd
-    "${workingdir}"/onos-gen-config "${allocatedOnosIps[$pos]}" /tmp/cluster-$i.json -n "${allocatedAtomixIps[*]}" >/dev/null
-    sudo docker exec onos-$i mkdir /root/onos/config
-    echo "Copying configuration to onos-$i"
-    sudo docker cp /tmp/cluster-$i.json onos-$i:/root/onos/config/cluster.json
+    "${workingdir}"/onos-gen-config "${allocatedOnosIps[$pos]}" "${workingdir}"/configs/cluster-$i.json --nodes "${allocatedAtomixIps[@]}" >/dev/null
+    docker exec onos-$i mkdir /root/onos/config
+    
+    docker cp "${workingdir}"/configs/cluster-$i.json onos-$i:/root/onos/config/cluster.json
     echo "Restarting container onos-$i"
-    sudo docker container restart onos-$i >/dev/null
+    docker container restart onos-$i >/dev/null
   done
 }
 
@@ -347,6 +347,7 @@ function main() {
 
     parse_params "$@"
 
+    mkdir "${workingdir}"/configs
     create_net_ine
     pull_if_not_present $atomixImage
     pull_if_not_present $onosImage
